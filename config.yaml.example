@@ -1,0 +1,22 @@
+# 首次启动自动写入 APP_TOKEN / TABLE_ID，这里只是示例
+bitable:
+  app_token: ""        # lark-cli base +base-create 返回
+  table_id: ""         # lark-cli base +table-create 返回
+  base_name: "实习情报雷达"
+  table_name: "Intel"
+
+baseline_path: "candidate_baseline.md"
+
+# 下载目录（相对项目根目录，lark-cli 要求不能有 ..）
+download_dir: "downloads"
+
+# 事件订阅参数
+event:
+  types: "im.message.receive_v1"
+  as: "bot"
+
+# 记录创建身份：user（推荐，表格归你名下）| bot
+record_write_as: "user"
+
+# 回执发送身份：只能 bot（送消息 API 要求）
+reply_as: "bot"

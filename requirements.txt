@@ -1,0 +1,6 @@
+openai>=1.50.0
+trafilatura>=1.12.0
+pydantic>=2.8.0
+pyyaml>=6.0.2
+python-dotenv>=1.0.1
+requests>=2.32.0
