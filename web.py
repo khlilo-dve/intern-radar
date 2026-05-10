@@ -26,6 +26,18 @@ def extract_url(text: str) -> Optional[str]:
     return m.group(0).rstrip(".,;:!?)】》")
 
 
+def extract_all_urls(text: str) -> list[str]:
+    """从一段文本里抠出所有 URL，去重保序。"""
+    seen = set()
+    result = []
+    for m in URL_RE.finditer(text or ""):
+        url = m.group(0).rstrip(".,;:!?)】》")
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
 def fetch_readable(url: str, timeout: int = 20) -> str:
     """抓网页并抽正文。先试 trafilatura，抽不到再退化到 requests + trafilatura.extract。"""
     html = trafilatura.fetch_url(url, no_ssl=False)

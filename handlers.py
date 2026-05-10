@@ -57,6 +57,8 @@ def handle_event(ctx: Context, event: dict) -> None:
             _handle_text(ctx, chat_id, message_id, content)
         elif mtype == "image":
             _handle_image(ctx, chat_id, message_id, content)
+        elif mtype == "post":
+            _handle_post(ctx, chat_id, message_id, content)
         else:
             _reply(ctx, chat_id, f"⏭️ 暂不支持的消息类型：{mtype}")
     except RetryExhausted as e:
@@ -73,21 +75,20 @@ def _handle_text(ctx: Context, chat_id: str, message_id: str, content: Any) -> N
         _reply(ctx, chat_id, "⚠️ 空文本，忽略")
         return
 
-    url = web.extract_url(text)
-    if not url:
+    urls = web.extract_all_urls(text)
+    if not urls:
         _reply(ctx, chat_id, "⏭️ 没看到 URL，这条不像招聘情报，跳过")
         return
 
-    _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{url}")
-
-    try:
-        body = web.fetch_readable(url)
-    except Exception as e:
-        _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
-        return
-
-    result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
-    _finalize(ctx, chat_id, result, raw_fallback=text[:500])
+    for url in urls:
+        _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{url}")
+        try:
+            body = web.fetch_readable(url)
+        except Exception as e:
+            _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
+            continue
+        result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
+        _finalize(ctx, chat_id, result, raw_fallback=text[:500])
 
 
 def _handle_image(ctx: Context, chat_id: str, message_id: str, content: Any) -> None:
@@ -112,6 +113,73 @@ def _handle_image(ctx: Context, chat_id: str, message_id: str, content: Any) -> 
     _reply(ctx, chat_id, "🛰️ 图片已下载，进入视觉解析…")
     result = llm.parse_image(ctx.client, ctx.baseline, local_path)
     _finalize(ctx, chat_id, result, raw_fallback=f"[image] {safe_name}")
+
+
+def _handle_post(ctx: Context, chat_id: str, message_id: str, content: Any) -> None:
+    """处理富文本消息（post）：可同时包含文字 URL 和图片。"""
+    # post content 格式: {"title": "...", "content": [[{tag, ...}, ...], ...]}
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            pass
+
+    if not isinstance(content, dict):
+        _reply(ctx, chat_id, "⚠️ 富文本解析失败")
+        return
+
+    text_parts = []
+    image_keys = []
+    for paragraph in content.get("content", []):
+        if not isinstance(paragraph, list):
+            continue
+        for elem in paragraph:
+            if not isinstance(elem, dict):
+                continue
+            tag = elem.get("tag", "")
+            if tag == "text":
+                text_parts.append(elem.get("text", ""))
+            elif tag == "a":
+                text_parts.append(elem.get("href", ""))
+            elif tag == "img":
+                key = elem.get("image_key", "")
+                if key:
+                    image_keys.append(key)
+
+    combined_text = " ".join(text_parts)
+
+    # 处理 URL
+    urls = web.extract_all_urls(combined_text)
+    for url in urls:
+        _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{url}")
+        try:
+            body = web.fetch_readable(url)
+        except Exception as e:
+            _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
+            continue
+        result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
+        _finalize(ctx, chat_id, result, raw_fallback=combined_text[:500])
+
+    # 处理图片
+    if image_keys:
+        if not ctx.vision_ok:
+            _reply(ctx, chat_id, "🖼️ 富文本中含图片，但 vision 未启用")
+        else:
+            for key in image_keys:
+                ctx.download_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = f"{int(time.time())}_{key[-16:]}.img"
+                local_path = ctx.download_dir / safe_name
+                try:
+                    larkcli.download_resource(message_id, key, "image", local_path, as_identity="bot")
+                except Exception as e:
+                    _reply(ctx, chat_id, f"❌ 图片下载失败：{_short(e)}")
+                    continue
+                _reply(ctx, chat_id, "🛰️ 图片已下载，进入视觉解析…")
+                result = llm.parse_image(ctx.client, ctx.baseline, local_path)
+                _finalize(ctx, chat_id, result, raw_fallback=f"[image] {safe_name}")
+
+    if not urls and not image_keys:
+        _reply(ctx, chat_id, "⏭️ 富文本中未找到可解析的内容")
 
 
 def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
