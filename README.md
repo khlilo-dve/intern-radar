@@ -1,17 +1,17 @@
 # intern-radar · 实习招聘情报捕捉助手
 
-在飞书里丢一条消息（URL 或招聘截图），后台自动用 Claude 解析公司/岗位/匹配度/降维打击策略/短板，写入多维表格沉淀。
+在飞书里丢一条消息（URL 或招聘截图），后台自动用 Claude 多维度解析岗位情报，写入飞书多维表格沉淀。
 
 ## 架构
 
 ```
 飞书 App → lark-cli event +subscribe (WebSocket 长连接)
-         → main.py 按行读 NDJSON
+         → main.py ThreadPoolExecutor 并发消费
          → text: 抽 URL + trafilatura 抓正文
            image: lark-cli 下载 + vision 识别
-         → OpenAI 兼容代理调用 Claude
-         → lark-cli base +record-upsert 入库
-         → lark-cli im +messages-send 回执
+         → OpenAI 兼容代理调用 Claude（带 retry + 指数退避）
+         → 去重检查 → lark-cli base +record-upsert 入库
+         → 飞书 Interactive Card 卡片回执（降级纯文本）
 ```
 
 **不用 webhook / 不起 HTTP server / 不用 ngrok** —— lark-cli 的 WebSocket 长连接把"内网穿透"这一步省了。
@@ -55,23 +55,48 @@ python main.py
 ```
 
 首次启动会：
-- 自动创建 Bitable app + 表 + 9 个字段
+- 自动创建 Bitable app + 表 + 全部字段
 - 把 app_token / table_id 写回 `config.yaml`
 - 运行一次 vision 自检；代理不支持多模态则自动降级
+- 后续启动自动检测并补齐缺失字段
+
+## 多维度评分体系
+
+每个岗位入库时按 5 个维度打分，加权计算综合匹配度：
+
+| 维度 | 含义 | 评分标尺 |
+|------|------|---------|
+| Tech_Vision | 技术视野要求 | 80+ 系统架构级 / 60-79 方案选型 / 40-59 了解概念 / <40 纯业务 |
+| Product_Dominance | 产品业务主导权 | 80+ 独立负责产品线 / 60-79 有话语权 / 40-59 执行层 / <40 纯执行 |
+| Exec_Ratio | 日常执行杂活比例 | <30 策略/架构为主 / 30-49 创作执行各半 / 50-69 执行为主 / 70+ 纯重复 |
+| AI_Leverage | AI/自动化杠杆空间 | 80+ 核心流程可加速 / 60-79 部分自动化 / 40-59 少量辅助 / <40 纯人工 |
+| Growth_Ceiling | 成长天花板 | 80+ 双晋升路径 / 60-79 有空间 / 40-59 天花板低 / <40 死胡同 |
+
+**加权公式**：`Tech×0.25 + Product×0.25 + (100-Exec)×0.20 + AI×0.15 + Growth×0.15`
+
+**Red_Flags 机制**：检测到纯线性劳动、极度内卷、无产品话语权等警报信号时，分数上限 60。
 
 ## 字段 schema
 
-| 字段 | 类型 |
-|------|------|
-| Company | 文本 |
-| Business_Line | 文本 |
-| Hard_Tags | 多选（最多 5 个） |
-| Match_Score | 数字 1-100 |
-| Attack_Strategy | 文本（≤ 50 字） |
-| Critical_Gap | 文本（≤ 50 字） |
-| Source_URL | URL |
-| Created_At | 日期时间 |
-| Raw_Input | 文本（原消息/图片名） |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| Company | 文本 | 公司名称 |
+| Business_Line | 文本 | 业务线/产品线 |
+| Hard_Tags | 文本 | 核心硬性技能（最多 5 个） |
+| Red_Flags | 文本 | 警报词汇（最多 3 个） |
+| Tech_Vision | 数字 | 技术视野要求 0-100 |
+| Product_Dominance | 数字 | 产品业务主导权 0-100 |
+| Exec_Ratio | 数字 | 日常执行杂活比例 0-100 |
+| AI_Leverage | 数字 | AI/自动化杠杆空间 0-100 |
+| Growth_Ceiling | 数字 | 成长天花板 0-100 |
+| Match_Score | 数字 | 综合匹配度 1-100 |
+| Attack_Strategy | 文本 | 差异化包装策略（详细版） |
+| Critical_Gap | 文本 | 核心短板分析（详细版） |
+| Status | 单选 | 未投递 / 简历未通过 / 简历通过 / 一面通过 / 二面通过 / 三面通过 |
+| Notes | 文本 | 人工备注（入库时为空） |
+| Source_URL | 文本 | 来源 URL |
+| Created_At | 日期时间 | 创建时间 |
+| Raw_Input | 文本 | 原始输入（消息/图片名） |
 
 ## 使用
 
@@ -80,6 +105,16 @@ python main.py
 - 任意招聘页截图 → vision 识别
 - 纯聊天 → 回"没 URL，跳过"
 - LLM 判定与招聘无关 → 回"跳过"并附原因
+- 重复发送同一 URL → 自动去重，回复"已入库"
+
+## 工程特性
+
+- **统一重试**：`@retry` 装饰器，指数退避，飞书 API 3 次 / LLM 2 次
+- **类型安全配置**：pydantic 模型校验，拼写错误运行前暴露
+- **并发处理**：ThreadPoolExecutor(3) 并行消费消息
+- **数据去重**：URL 模式按 Source_URL，图片模式按 Company+Raw_Input
+- **飞书卡片**：Interactive Card 结构化回复，失败降级纯文本
+- **单元测试**：49 个用例覆盖核心纯函数
 
 ## 常见问题
 
@@ -95,17 +130,27 @@ python main.py
 
 ```
 .
-├── main.py                  # 入口 + 事件循环 + 崩溃重连
-├── handlers.py              # 按 message_type 分发
-├── llm.py                   # OpenAI 兼容代理调用 + pydantic 校验
+├── main.py                  # 入口 + 事件循环 + 并发调度
+├── handlers.py              # 消息分发 + 卡片回复 + 去重
+├── llm.py                   # OpenAI 兼容调用 + 多维评分 prompt
 ├── larkcli.py               # lark-cli 子进程封装
 ├── web.py                   # URL → 正文
 ├── models.py                # IntelRecord + Bitable 字段 spec
+├── config.py                # pydantic 类型安全配置
+├── utils.py                 # @retry 通用重试装饰器
 ├── candidate_baseline.md    # 候选人基准（prompt 靶子）
 ├── config.yaml              # bitable token / 表名等（首次自动生成）
 ├── .env                     # LLM 密钥（不进 git）
 ├── downloads/               # 临时图片落地
+├── tests/                   # 单元测试
 └── requirements.txt
+```
+
+## 运行测试
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/ -v
 ```
 
 ## 红线
