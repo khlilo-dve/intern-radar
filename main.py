@@ -8,14 +8,15 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import yaml
 from dotenv import load_dotenv
 
 import handlers
 import larkcli
 import llm
+from config import AppConfig, load_config as _load_config, save_config as _save_config
 from models import BITABLE_FIELD_SPEC
 
 ROOT = Path(__file__).resolve().parent
@@ -33,7 +34,7 @@ def setup_logging() -> None:
     )
 
 
-def load_config() -> dict:
+def load_config() -> AppConfig:
     if not CONFIG_PATH.exists():
         sample = ROOT / "config.yaml.example"
         if sample.exists():
@@ -41,30 +42,24 @@ def load_config() -> dict:
             log.info("config.yaml 不存在，已从 example 复制一份")
         else:
             raise FileNotFoundError("config.yaml 和 config.yaml.example 都找不到")
-    with CONFIG_PATH.open(encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    return _load_config(CONFIG_PATH)
 
 
-def save_config(cfg: dict) -> None:
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+def save_config(cfg: AppConfig) -> None:
+    _save_config(cfg, CONFIG_PATH)
 
 
-def bootstrap_bitable(cfg: dict) -> dict:
+def bootstrap_bitable(cfg: AppConfig) -> AppConfig:
     """确保 bitable 已建并返回带 app_token/table_id 的配置。"""
-    bt = cfg.setdefault("bitable", {})
-    write_as = cfg.get("record_write_as", "user")
+    write_as = cfg.record_write_as
 
-    if bt.get("app_token") and bt.get("table_id"):
-        log.info("复用现有 bitable: %s / %s", bt["app_token"], bt["table_id"])
-        _verify_fields(bt["app_token"], bt["table_id"], write_as)
+    if cfg.is_bootstrapped():
+        log.info("复用现有 bitable: %s / %s", cfg.bitable.app_token, cfg.bitable.table_id)
+        _verify_fields(cfg.bitable.app_token, cfg.bitable.table_id, write_as)
         return cfg
 
-    base_name = bt.get("base_name") or "实习情报雷达"
-    table_name = bt.get("table_name") or "Intel"
-
-    log.info("首次启动：创建 Bitable app=%s", base_name)
-    base_resp = larkcli.base_create(name=base_name, as_identity=write_as)
+    log.info("首次启动：创建 Bitable app=%s", cfg.bitable.base_name)
+    base_resp = larkcli.base_create(name=cfg.bitable.base_name, as_identity=write_as)
     app_token = (
         base_resp.get("app", {}).get("app_token")
         or base_resp.get("base", {}).get("base_token")
@@ -75,10 +70,10 @@ def bootstrap_bitable(cfg: dict) -> dict:
         raise RuntimeError(f"base-create 未返回 app_token: {base_resp}")
     log.info("app_token=%s", app_token)
 
-    log.info("创建 table=%s + 9 字段", table_name)
+    log.info("创建 table=%s + %d 字段", cfg.bitable.table_name, len(BITABLE_FIELD_SPEC))
     table_resp = larkcli.table_create(
         base_token=app_token,
-        name=table_name,
+        name=cfg.bitable.table_name,
         fields=BITABLE_FIELD_SPEC,
         as_identity=write_as,
     )
@@ -93,8 +88,8 @@ def bootstrap_bitable(cfg: dict) -> dict:
         raise RuntimeError(f"table-create 未返回 table_id: {table_resp}")
     log.info("table_id=%s", table_id)
 
-    bt["app_token"] = app_token
-    bt["table_id"] = table_id
+    cfg.bitable.app_token = app_token
+    cfg.bitable.table_id = table_id
     save_config(cfg)
     log.info("已写回 config.yaml")
     return cfg
@@ -120,10 +115,11 @@ def _verify_fields(base_token: str, table_id: str, as_identity: str) -> None:
                     log.error("补字段 %s 失败：%s", spec["field_name"], e)
 
 
-def run_event_loop(ctx: handlers.Context, cfg: dict) -> None:
-    event_cfg = cfg.get("event") or {}
-    etypes = event_cfg.get("types") or "im.message.receive_v1"
-    as_id = event_cfg.get("as") or "bot"
+def run_event_loop(ctx: handlers.Context, cfg: AppConfig) -> None:
+    etypes = cfg.event.types
+    as_id = cfg.event.as_identity
+
+    pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="handler")
 
     backoff = [5, 30, 120]
     attempt = 0
@@ -132,7 +128,7 @@ def run_event_loop(ctx: handlers.Context, cfg: dict) -> None:
             "lark-cli", "event", "+subscribe",
             "--event-types", etypes,
             "--as", as_id,
-            "--compact", "--quiet",
+            "--compact", "--quiet", "--force",
         ]
         log.info("启动事件订阅: %s", " ".join(cmd))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -140,6 +136,7 @@ def run_event_loop(ctx: handlers.Context, cfg: dict) -> None:
         def _graceful(_sig, _frm):
             log.info("收到停止信号，关闭事件流")
             proc.terminate()
+            pool.shutdown(wait=False)
             sys.exit(0)
 
         signal.signal(signal.SIGINT, _graceful)
@@ -156,9 +153,10 @@ def run_event_loop(ctx: handlers.Context, cfg: dict) -> None:
                 except json.JSONDecodeError:
                     log.warning("跳过非 JSON 行: %s", line[:200])
                     continue
-                handlers.handle_event(ctx, event)
+                pool.submit(handlers.handle_event, ctx, event)
         except KeyboardInterrupt:
             proc.terminate()
+            pool.shutdown(wait=False)
             return
 
         code = proc.wait()
@@ -182,7 +180,7 @@ def main() -> None:
     cfg = load_config()
     cfg = bootstrap_bitable(cfg)
 
-    baseline_path = ROOT / (cfg.get("baseline_path") or "candidate_baseline.md")
+    baseline_path = ROOT / cfg.baseline_path
     if not baseline_path.exists():
         raise FileNotFoundError(f"候选人基准文件不存在：{baseline_path}")
     baseline = baseline_path.read_text(encoding="utf-8")
@@ -190,20 +188,20 @@ def main() -> None:
     client = llm.make_client()
     vision_ok = llm.self_check_vision(client)
     if vision_ok:
-        log.info("✅ vision 模型自检通过，图片流已启用")
+        log.info("vision 模型自检通过，图片流已启用")
     else:
-        log.warning("⚠️ vision 未启用/自检失败，图片会被降级回复")
+        log.warning("vision 未启用/自检失败，图片会被降级回复")
 
-    download_dir = ROOT / (cfg.get("download_dir") or "downloads")
+    download_dir = ROOT / cfg.download_dir
 
     ctx = handlers.Context(
         client=client,
         baseline=baseline,
-        base_token=cfg["bitable"]["app_token"],
-        table_id=cfg["bitable"]["table_id"],
+        base_token=cfg.bitable.app_token,
+        table_id=cfg.bitable.table_id,
         download_dir=download_dir,
-        record_write_as=cfg.get("record_write_as", "user"),
-        reply_as=cfg.get("reply_as", "bot"),
+        record_write_as=cfg.record_write_as,
+        reply_as=cfg.reply_as,
         vision_ok=vision_ok,
     )
 

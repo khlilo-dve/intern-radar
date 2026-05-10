@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from utils import retry
+
 log = logging.getLogger(__name__)
 
 LARK_CLI = shutil.which("lark-cli") or "lark-cli"
@@ -102,6 +104,25 @@ def field_create(base_token: str, table_id: str, field_spec: dict, as_identity: 
 
 # ---------- Bitable runtime ----------
 
+def record_list(base_token: str, table_id: str, as_identity: str = "user",
+                limit: int = 100) -> list[dict]:
+    """列出表中记录，返回 items 列表。"""
+    args = [
+        "base", "+record-list",
+        "--base-token", base_token,
+        "--table-id", table_id,
+        "--limit", str(limit),
+        "--as", as_identity,
+    ]
+    resp = _extract_data(_run(args, timeout=30))
+    if isinstance(resp, dict) and "items" in resp:
+        return resp["items"]
+    if isinstance(resp, list):
+        return resp
+    return []
+
+
+@retry(max_retries=3, backoff_base=1.0, backoff_max=5.0, exceptions=(LarkCliError,))
 def record_upsert(base_token: str, table_id: str, fields: dict, as_identity: str = "user") -> dict:
     """
     用 v1 bitable API 直调，绕过 lark-cli 1.0 的 base +record-upsert（它打向 v3 接口
@@ -115,15 +136,7 @@ def record_upsert(base_token: str, table_id: str, fields: dict, as_identity: str
         "--data", json.dumps(payload, ensure_ascii=False),
         "--as", as_identity,
     ]
-    last_err: Exception | None = None
-    for attempt in (1, 2, 3):
-        try:
-            return _extract_data(_run(args, timeout=20))
-        except LarkCliError as e:
-            last_err = e
-            log.warning("record_upsert attempt %s failed: %s", attempt, e.payload)
-            continue
-    raise last_err  # type: ignore[misc]
+    return _extract_data(_run(args, timeout=20))
 
 
 # ---------- IM ----------
@@ -153,20 +166,19 @@ def download_resource(message_id: str, file_key: str, rtype: str, out_path: str 
         "--output", str(rel_out),
         "--as", as_identity,
     ]
-    last_err: Exception | None = None
-    for attempt in (1, 2, 3):
-        try:
-            _run(args, timeout=25)
-            if not abs_out.exists():
-                raise LarkCliError(args, {"error": "download_ok_but_file_missing", "path": str(abs_out)})
-            return abs_out
-        except LarkCliError as e:
-            last_err = e
-            log.warning("download attempt %s failed: %s", attempt, e.payload)
-            continue
-    raise last_err  # type: ignore[misc]
+
+    @retry(max_retries=3, backoff_base=1.0, backoff_max=5.0, exceptions=(LarkCliError,))
+    def _do_download() -> Path:
+        _run(args, timeout=25)
+        if not abs_out.exists():
+            raise LarkCliError(args, {"error": "download_ok_but_file_missing", "path": str(abs_out)})
+        log.debug("download OK: %s (%d bytes)", abs_out, abs_out.stat().st_size)
+        return abs_out
+
+    return _do_download()
 
 
+@retry(max_retries=3, backoff_base=1.0, backoff_max=5.0, exceptions=(LarkCliError,))
 def send_text(chat_id: Optional[str] = None, user_id: Optional[str] = None,
               text: str = "", as_identity: str = "bot") -> dict:
     if not (chat_id or user_id):
@@ -176,15 +188,20 @@ def send_text(chat_id: Optional[str] = None, user_id: Optional[str] = None,
         args.extend(["--chat-id", chat_id])
     else:
         args.extend(["--user-id", user_id])
-    last_err: Exception | None = None
-    for attempt in (1, 2, 3):
-        try:
-            return _extract_data(_run(args, timeout=20))
-        except LarkCliError as e:
-            last_err = e
-            log.warning("send_text attempt %s failed: %s", attempt, e.payload)
-            continue
-    raise last_err  # type: ignore[misc]
+    return _extract_data(_run(args, timeout=20))
+
+
+@retry(max_retries=3, backoff_base=1.0, backoff_max=5.0, exceptions=(LarkCliError,))
+def send_card(chat_id: str, card: dict, as_identity: str = "bot") -> dict:
+    """发送飞书 Interactive Card 卡片消息。"""
+    args = [
+        "im", "+messages-send",
+        "--chat-id", chat_id,
+        "--msg-type", "interactive",
+        "--content", json.dumps(card, ensure_ascii=False),
+        "--as", as_identity,
+    ]
+    return _extract_data(_run(args, timeout=20))
 
 
 # ---------- helpers ----------

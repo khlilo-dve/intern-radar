@@ -5,8 +5,6 @@ import json
 import logging
 import re
 import time
-
-_IMG_KEY_RE = re.compile(r"img_v\d+_[A-Za-z0-9_\-]+")
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -15,6 +13,9 @@ import larkcli
 import llm
 import web
 from models import IntelRecord
+from utils import RetryExhausted
+
+_IMG_KEY_RE = re.compile(r"img_v\d+_[A-Za-z0-9_\-]+")
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +59,9 @@ def handle_event(ctx: Context, event: dict) -> None:
             _handle_image(ctx, chat_id, message_id, content)
         else:
             _reply(ctx, chat_id, f"⏭️ 暂不支持的消息类型：{mtype}")
+    except RetryExhausted as e:
+        log.error("重试耗尽: %s", e)
+        _reply(ctx, chat_id, f"⚠️ 服务暂时不可用（重试 {e.attempts} 次后失败），请稍后再试")
     except Exception as e:
         log.exception("handler error")
         _reply(ctx, chat_id, f"❌ 处理失败：{_short(e)}")
@@ -121,6 +125,10 @@ def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
     if not result.Raw_Input:
         result.Raw_Input = raw_fallback
 
+    if _is_duplicate(ctx, result):
+        _reply(ctx, chat_id, f"⏭️ 该情报已入库（{result.Company}），跳过重复")
+        return
+
     upsert_fields = result.to_bitable_fields()
     try:
         larkcli.record_upsert(
@@ -134,15 +142,51 @@ def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
         _reply(ctx, chat_id, f"❌ 入库失败：{_short(e)}")
         return
 
-    summary = (
-        f"✅ 已入库\n"
-        f"公司：{result.Company}\n"
-        f"业务线：{result.Business_Line or '—'}\n"
-        f"匹配度：{result.Match_Score}\n"
-        f"打击点：{result.Attack_Strategy}\n"
-        f"短板：{result.Critical_Gap}"
-    )
-    _reply(ctx, chat_id, summary)
+    def _bar(score: int, invert: bool = False) -> str:
+        s = (100 - score) if invert else score
+        filled = round(s / 10)
+        return "█" * filled + "░" * (10 - filled)
+
+    score_lines = "\n".join([
+        f"**🔧 技术视野**  `{_bar(result.Tech_Vision)}` **{result.Tech_Vision}**",
+        f"**🎯 产品主导**  `{_bar(result.Product_Dominance)}` **{result.Product_Dominance}**",
+        f"**⚡ 杂活比例**  `{_bar(result.Exec_Ratio, invert=True)}` **{result.Exec_Ratio}**",
+        f"**🤖 AI 杠杆**   `{_bar(result.AI_Leverage)}` **{result.AI_Leverage}**",
+        f"**🚀 成长天花板** `{_bar(result.Growth_Ceiling)}` **{result.Growth_Ceiling}**",
+    ])
+    flags_line = ""
+    if result.Red_Flags:
+        flags_line = f"\n🚩 **警报**：{' | '.join(result.Red_Flags)}"
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"✅ {result.Company}"},
+            "template": "green" if result.Match_Score >= 70 else ("yellow" if result.Match_Score >= 50 else "red"),
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"业务线：{result.Business_Line or '—'}"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": score_lines}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**📊 综合匹配**  `{_bar(result.Match_Score)}` **{result.Match_Score}**{flags_line}"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**打击点**\n{result.Attack_Strategy}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**短板**\n{result.Critical_Gap}"}},
+        ],
+    }
+
+    try:
+        larkcli.send_card(chat_id, card, as_identity=ctx.reply_as)
+    except Exception as e:
+        log.warning("卡片发送失败，降级纯文本: %s", e)
+        fallback = (
+            f"✅ 已入库 | {result.Company}\n"
+            f"匹配度：{result.Match_Score}\n"
+            f"打击点：{result.Attack_Strategy}\n"
+            f"短板：{result.Critical_Gap}"
+        )
+        _reply(ctx, chat_id, fallback)
 
 
 # ---------- utilities ----------
@@ -203,6 +247,27 @@ def _walk_for_image_key(node: Any) -> Optional[str]:
         if m:
             return m.group(0)
     return None
+
+
+def _is_duplicate(ctx: Context, record: IntelRecord) -> bool:
+    """检查是否已存在相同情报。URL 模式按 Source_URL 去重，图片模式按 Company 去重。"""
+    try:
+        items = larkcli.record_list(ctx.base_token, ctx.table_id, as_identity=ctx.record_write_as)
+    except Exception as e:
+        log.warning("去重查询失败（不阻塞入库）: %s", e)
+        return False
+
+    for item in items:
+        fields = item.get("fields") or {}
+        # URL 去重
+        if record.Source_URL and fields.get("Source_URL") == record.Source_URL:
+            return True
+        # 图片模式：同公司 + 同 Raw_Input
+        if not record.Source_URL and record.Company == fields.get("Company"):
+            existing_raw = str(fields.get("Raw_Input") or "")
+            if record.Raw_Input and existing_raw and record.Raw_Input == existing_raw:
+                return True
+    return False
 
 
 def _reply(ctx: Context, chat_id: Optional[str], text: str) -> None:
