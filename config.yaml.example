@@ -20,3 +20,17 @@ record_write_as: "user"
 
 # 回执发送身份：只能 bot（送消息 API 要求）
 reply_as: "bot"
+
+# 爬虫定时扫描配置
+crawler:
+  enabled: false              # 改为 true 启用自动爬取
+  schedule_hour: 9            # 每天几点扫描（24h）
+  schedule_minute: 0
+  score_threshold: 70         # 低于此分不入库
+  sources:
+    - name: nowcoder          # 牛客实习广场（推荐，直爬无依赖）
+      enabled: true
+      platform: "nowcoder"
+      feeds:
+        - keyword: "AI产品"   # 关键词过滤
+          city: "北京"

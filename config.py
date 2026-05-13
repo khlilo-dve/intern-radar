@@ -21,9 +21,31 @@ class EventConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CrawlerFeedConfig(BaseModel):
+    keyword: str = ""
+    city: str = ""
+
+
+class CrawlerSourceConfig(BaseModel):
+    name: str = "rsshub"
+    enabled: bool = True
+    base_url: str = "https://rsshub.app"
+    platform: str = "boss"
+    feeds: list[CrawlerFeedConfig] = Field(default_factory=list)
+
+
+class CrawlerConfig(BaseModel):
+    enabled: bool = False
+    schedule_hour: int = 9
+    schedule_minute: int = 0
+    score_threshold: int = 70
+    sources: list[CrawlerSourceConfig] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     bitable: BitableConfig = Field(default_factory=BitableConfig)
     event: EventConfig = Field(default_factory=EventConfig)
+    crawler: CrawlerConfig = Field(default_factory=CrawlerConfig)
     record_write_as: str = "user"
     reply_as: str = "bot"
     baseline_path: str = "candidate_baseline.md"

@@ -22,12 +22,14 @@ class IntelRecord(BaseModel):
     Growth_Ceiling: int = Field(..., ge=0, le=100, description="成长天花板")
 
     Match_Score: int = Field(..., ge=0, le=100)
-    Attack_Strategy: str = Field(..., max_length=500)
-    Critical_Gap: str = Field(..., max_length=500)
+    Attack_Strategy: str = Field(..., max_length=2000)
+    Critical_Gap: str = Field(..., max_length=2000)
 
     Status: Optional[str] = None
     Notes: Optional[str] = None
 
+    Job_Title: Optional[str] = None
+    City: Optional[str] = None
     Source_URL: Optional[str] = None
     Raw_Input: Optional[str] = None
 
@@ -41,8 +43,8 @@ class IntelRecord(BaseModel):
     @classmethod
     def _trim_long(cls, v: str) -> str:
         v = v.strip()
-        if len(v) > 500:
-            v = v[:498] + "…"
+        if len(v) > 2000:
+            v = v[:1998] + "…"
         return v
 
     def to_bitable_fields(self) -> dict:
@@ -63,8 +65,12 @@ class IntelRecord(BaseModel):
             "Created_At": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
         }
         fields["Status"] = self.Status or "未投递"
+        if self.Job_Title:
+            fields["Job_Title"] = self.Job_Title
+        if self.City:
+            fields["City"] = self.City
         if self.Source_URL:
-            fields["Source_URL"] = self.Source_URL
+            fields["投递网址"] = self.Source_URL
         if self.Raw_Input:
             fields["Raw_Input"] = self.Raw_Input
         return fields
@@ -98,7 +104,9 @@ BITABLE_FIELD_SPEC = [
         },
     },
     {"field_name": "Notes", "type": "text"},
-    {"field_name": "Source_URL", "type": "text"},
+    {"field_name": "Job_Title", "type": "text"},
+    {"field_name": "City", "type": "text"},
+    {"field_name": "投递网址", "type": "text"},
     {"field_name": "Created_At", "type": "datetime"},
     {"field_name": "Raw_Input", "type": "text"},
 ]

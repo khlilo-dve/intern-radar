@@ -91,12 +91,21 @@ def field_list(base_token: str, table_id: str, as_identity: str = "user") -> lis
     return []
 
 
+_FIELD_TYPE_MAP = {1: "text", 2: "number", 3: "select", 5: "datetime"}
+
+
 def field_create(base_token: str, table_id: str, field_spec: dict, as_identity: str = "user") -> dict:
+    spec = dict(field_spec)
+    # lark-cli +field-create 要求 type 为字符串（"select"），不接受数字（3）
+    if isinstance(spec.get("type"), int):
+        spec["type"] = _FIELD_TYPE_MAP.get(spec["type"], spec["type"])
+    # lark-cli +field-create 不支持 property 参数，去掉
+    spec.pop("property", None)
     args = [
         "base", "+field-create",
         "--base-token", base_token,
         "--table-id", table_id,
-        "--json", json.dumps(field_spec, ensure_ascii=False),
+        "--json", json.dumps(spec, ensure_ascii=False),
         "--as", as_identity,
     ]
     return _extract_data(_run(args))

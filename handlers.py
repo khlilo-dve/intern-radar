@@ -197,6 +197,14 @@ def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
         _reply(ctx, chat_id, f"⏭️ 该情报已入库（{result.Company}），跳过重复")
         return
 
+    # 截图模式没有 Source_URL，自动补搜索链接
+    if not result.Source_URL and (result.Job_Title or result.Company):
+        result.Source_URL = llm.build_search_url(
+            company=result.Company,
+            job_title=result.Job_Title or "",
+            city=result.City or "",
+        )
+
     upsert_fields = result.to_bitable_fields()
     try:
         larkcli.record_upsert(
@@ -328,7 +336,7 @@ def _is_duplicate(ctx: Context, record: IntelRecord) -> bool:
     for item in items:
         fields = item.get("fields") or {}
         # URL 去重
-        if record.Source_URL and fields.get("Source_URL") == record.Source_URL:
+        if record.Source_URL and fields.get("投递网址") == record.Source_URL:
             return True
         # 图片模式：同公司 + 同 Raw_Input
         if not record.Source_URL and record.Company == fields.get("Company"):
@@ -346,6 +354,47 @@ def _reply(ctx: Context, chat_id: Optional[str], text: str) -> None:
         larkcli.send_text(chat_id=chat_id, text=text, as_identity=ctx.reply_as)
     except Exception as e:
         log.error("reply failed: %s", e)
+
+
+def notify_high_score(ctx: Context, chat_id: str, result: IntelRecord) -> None:
+    """爬虫发现高分岗位时，发送飞书卡片通知。"""
+    def _bar(score: int, invert: bool = False) -> str:
+        s = (100 - score) if invert else score
+        filled = round(s / 10)
+        return "█" * filled + "░" * (10 - filled)
+
+    score_lines = "\n".join([
+        f"**🔧 技术视野**  `{_bar(result.Tech_Vision)}` **{result.Tech_Vision}**",
+        f"**🎯 产品主导**  `{_bar(result.Product_Dominance)}` **{result.Product_Dominance}**",
+        f"**⚡ 杂活比例**  `{_bar(result.Exec_Ratio, invert=True)}` **{result.Exec_Ratio}**",
+        f"**🤖 AI 杠杆**   `{_bar(result.AI_Leverage)}` **{result.AI_Leverage}**",
+        f"**🚀 成长天花板** `{_bar(result.Growth_Ceiling)}` **{result.Growth_Ceiling}**",
+    ])
+    flags_line = ""
+    if result.Red_Flags:
+        flags_line = f"\n🚩 **警报**：{' | '.join(result.Red_Flags)}"
+    url_line = f"\n🔗 [投递/查看详情]({result.Source_URL})" if result.Source_URL else ""
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🎯 新发现: {result.Company} — {result.Job_Title or ''}"},
+            "template": "green" if result.Match_Score >= 70 else ("yellow" if result.Match_Score >= 50 else "red"),
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"业务线：{result.Business_Line or '—'}　城市：{result.City or '—'}"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": score_lines}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**📊 综合匹配**  `{_bar(result.Match_Score)}` **{result.Match_Score}**{flags_line}{url_line}"}},
+        ],
+    }
+    try:
+        larkcli.send_card(chat_id, card, as_identity=ctx.reply_as)
+    except Exception as e:
+        log.warning("高分推送卡片发送失败: %s", e)
+        fallback = f"🎯 {result.Company} — {result.Job_Title or ''}\n匹配度：{result.Match_Score}\n{result.Source_URL or ''}"
+        _reply(ctx, chat_id, fallback)
 
 
 def _short(e: Exception) -> str:

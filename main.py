@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,7 +18,8 @@ import handlers
 import larkcli
 import llm
 from config import AppConfig, load_config as _load_config, save_config as _save_config
-from models import BITABLE_FIELD_SPEC
+from crawlers import NowcoderCrawler, RSSHubCrawler
+from models import BITABLE_FIELD_SPEC, IntelRecord
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.yaml"
@@ -115,6 +117,106 @@ def _verify_fields(base_token: str, table_id: str, as_identity: str) -> None:
                     log.error("补字段 %s 失败：%s", spec["field_name"], e)
 
 
+def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
+    """定时爬虫扫描：抓取 → LLM 评分 → 高分入库 + 推送。"""
+    crawler_cfg = cfg.crawler
+    if not crawler_cfg.enabled:
+        return
+
+    log.info("=== 爬虫扫描开始 ===")
+    baseline = ctx.baseline
+    client = ctx.client
+    threshold = crawler_cfg.score_threshold
+    seen_urls: set[str] = set()
+
+    for source in crawler_cfg.sources:
+        if not source.enabled:
+            continue
+        try:
+            if source.name == "nowcoder":
+                crawler = NowcoderCrawler()
+            else:
+                crawler = RSSHubCrawler(base_url=source.base_url)
+            for feed in source.feeds:
+                jobs = crawler.crawl(
+                    keyword=feed.keyword,
+                    city=feed.city,
+                    platform=source.platform,
+                )
+                log.info("source=%s keyword=%s city=%s → %d 条原始职位",
+                         source.name, feed.keyword, feed.city, len(jobs))
+
+                for job in jobs:
+                    if job.url in seen_urls:
+                        continue
+                    seen_urls.add(job.url)
+
+                    # 用 trafilatura 抓 JD 正文
+                    body = job.jd_text
+                    if not body and job.url:
+                        try:
+                            body = web.fetch_readable(job.url)
+                        except Exception as e:
+                            log.warning("JD 抓取失败 %s: %s", job.url, e)
+                            continue
+
+                    if not body or len(body) < 50:
+                        log.debug("JD 太短，跳过: %s", job.title)
+                        continue
+
+                    # LLM 评分
+                    try:
+                        result = llm.parse_text(client, baseline, body, source_url=job.url)
+                    except Exception as e:
+                        log.warning("LLM 评分失败 %s: %s", job.title, e)
+                        continue
+
+                    if isinstance(result, dict) and result.get("__skip__"):
+                        continue
+                    if not isinstance(result, IntelRecord):
+                        continue
+
+                    # 补充爬虫元数据
+                    if not result.Job_Title:
+                        result.Job_Title = job.title
+                    if not result.City:
+                        result.City = job.city
+                    if not result.Source_URL:
+                        result.Source_URL = job.url
+
+                    # 低分跳过
+                    if result.Match_Score < threshold:
+                        log.debug("低分跳过: %s match=%d", result.Company, result.Match_Score)
+                        continue
+
+                    # 入库
+                    upsert_fields = result.to_bitable_fields()
+                    try:
+                        larkcli.record_upsert(
+                            cfg.bitable.app_token, cfg.bitable.table_id,
+                            fields=upsert_fields,
+                            as_identity=cfg.record_write_as,
+                        )
+                    except Exception as e:
+                        log.error("爬虫入库失败 %s: %s", result.Company, e)
+                        continue
+
+                    # 推送飞书（用 bot 身份推到指定群/个人）
+                    chat_id = os.environ.get("NOTIFY_CHAT_ID", "")
+                    if chat_id:
+                        try:
+                            handlers.notify_high_score(ctx, chat_id, result)
+                        except Exception as e:
+                            log.warning("飞书推送失败 %s: %s", result.Company, e)
+
+                    log.info("✅ 已入库: %s — %s (match=%d)", result.Company, result.Job_Title, result.Match_Score)
+
+        except Exception as e:
+            log.error("数据源 %s 扫描异常: %s", source.name, e)
+
+    log.info("=== 爬虫扫描结束 ===")
+
+
 def run_event_loop(ctx: handlers.Context, cfg: AppConfig) -> None:
     etypes = cfg.event.types
     as_id = cfg.event.as_identity
@@ -204,6 +306,24 @@ def main() -> None:
         reply_as=cfg.reply_as,
         vision_ok=vision_ok,
     )
+
+    # 启动爬虫定时扫描
+    if cfg.crawler.enabled:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            run_crawler_scan, "cron",
+            hour=cfg.crawler.schedule_hour,
+            minute=cfg.crawler.schedule_minute,
+            args=[ctx, cfg],
+            id="crawler_scan",
+        )
+        scheduler.start()
+        log.info("爬虫调度已启动: 每天 %02d:%02d 扫描",
+                 cfg.crawler.schedule_hour, cfg.crawler.schedule_minute)
+
+        # 启动时立即跑一次扫描
+        threading.Thread(target=run_crawler_scan, args=(ctx, cfg), daemon=True).start()
 
     run_event_loop(ctx, cfg)
 

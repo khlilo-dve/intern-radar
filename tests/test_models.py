@@ -60,7 +60,7 @@ class TestIntelRecord:
 
 class TestBitableFieldSpec:
     def test_field_count(self):
-        assert len(BITABLE_FIELD_SPEC) == 17
+        assert len(BITABLE_FIELD_SPEC) == 19
 
     def test_status_is_single_select(self):
         status = next(f for f in BITABLE_FIELD_SPEC if f['field_name'] == 'Status')

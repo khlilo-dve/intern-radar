@@ -30,6 +30,8 @@ SYSTEM_PROMPT = """你是"实习情报分析师"，为一名特定候选人扫�
 1. 只输出一个纯粹的 JSON 对象。你的第一个输出字符必须是 {{，最后一个输出字符必须是 }}。禁止使用 Markdown 代码块包裹（即禁止出现 ```json），禁止任何前置或后置解释文字。
 2. 字段与类型必须严格遵循：
    - Company: string — 公司名称
+   - Job_Title: string — 职位名称（从内容中识别，如"AI产品实习生"）
+   - City: string — 工作城市（如"北京"，不确定填空字符串）
    - Business_Line: string — 所属业务线/产品线（不确定填空字符串）
    - Hard_Tags: string[]（最多 5 个）— 核心硬性技能词汇
    - Red_Flags: string[]（最多 3 个）— 警报词汇（如体现纯线性劳动、极度内卷、无产品话语权的暗语，没有则为空数组）
@@ -62,6 +64,32 @@ def make_client() -> OpenAI:
 
 def vision_available() -> bool:
     return bool(os.environ.get("LLM_MODEL_VISION", "").strip())
+
+
+_BOSS_CITY_CODES = {
+    "北京": "101010100", "上海": "101020100", "广州": "101280100",
+    "深圳": "101280600", "杭州": "101210100", "成都": "101270100",
+    "南京": "101190100", "武汉": "101200100", "西安": "101110100",
+    "苏州": "101190400", "长沙": "101250100", "厦门": "101230200",
+    "天津": "101030100", "重庆": "101040100", "郑州": "101180100",
+    "东莞": "101281600", "珠海": "101280700", "合肥": "101220100",
+    "青岛": "101120200", "济南": "101120100", "福州": "101230100",
+}
+
+
+def build_search_url(company: str = "", job_title: str = "", city: str = "",
+                     platform: str = "boss") -> str:
+    """根据公司/职位/城市构造招聘平台搜索 URL。"""
+    from urllib.parse import quote
+    query = job_title or company
+    if not query:
+        return ""
+    if platform == "boss":
+        city_code = _BOSS_CITY_CODES.get(city, "101010100")
+        return f"https://www.zhipin.com/web/geek/job?query={quote(query)}&city={city_code}"
+    elif platform == "lagou":
+        return f"https://www.lagou.com/wn/zhaopin?kd={quote(query)}&city={quote(city)}"
+    return ""
 
 
 def parse_text(client: OpenAI, baseline: str, raw_text: str, source_url: Optional[str] = None,
@@ -138,7 +166,7 @@ def _chat_and_parse(client: OpenAI, model: str, system: str, user_content: list,
             {"role": "user", "content": user_content},
         ],
         temperature=0.2,
-        max_tokens=2048,
+        max_tokens=4096,
     )
     elapsed = time.monotonic() - t0
     usage = resp.usage
