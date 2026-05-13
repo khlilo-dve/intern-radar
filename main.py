@@ -18,7 +18,7 @@ import handlers
 import larkcli
 import llm
 from config import AppConfig, load_config as _load_config, save_config as _save_config
-from crawlers import NowcoderCrawler, RSSHubCrawler
+from crawlers import BossCrawler, NowcoderCrawler, RSSHubCrawler
 from models import BITABLE_FIELD_SPEC, IntelRecord
 
 ROOT = Path(__file__).resolve().parent
@@ -133,7 +133,9 @@ def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
         if not source.enabled:
             continue
         try:
-            if source.name == "nowcoder":
+            if source.name == "boss":
+                crawler = BossCrawler()
+            elif source.name == "nowcoder":
                 crawler = NowcoderCrawler()
             else:
                 crawler = RSSHubCrawler(base_url=source.base_url)
@@ -155,7 +157,9 @@ def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
                     body = job.jd_text
                     if not body and job.url:
                         try:
-                            body = web.fetch_readable(job.url)
+                            import trafilatura
+                            html = trafilatura.fetch_url(job.url)
+                            body = trafilatura.extract(html) if html else ""
                         except Exception as e:
                             log.warning("JD 抓取失败 %s: %s", job.url, e)
                             continue

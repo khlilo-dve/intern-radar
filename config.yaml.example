@@ -32,5 +32,5 @@ crawler:
       enabled: true
       platform: "nowcoder"
       feeds:
-        - keyword: "AI产品"   # 关键词过滤
+        - keyword: ""         # 留空 = 不过滤，全部交给 LLM 评分
           city: "北京"
