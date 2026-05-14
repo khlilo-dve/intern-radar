@@ -94,6 +94,20 @@ def field_list(base_token: str, table_id: str, as_identity: str = "user") -> lis
 _FIELD_TYPE_MAP = {1: "text", 2: "number", 3: "select", 5: "datetime"}
 
 
+def field_rename(base_token: str, table_id: str, old_name: str, new_name: str,
+                 as_identity: str = "user") -> dict:
+    """重命名字段（通过 field-update 改 field_name）。"""
+    args = [
+        "base", "+field-update",
+        "--base-token", base_token,
+        "--table-id", table_id,
+        "--field-id", old_name,
+        "--json", json.dumps({"field_name": new_name}, ensure_ascii=False),
+        "--as", as_identity,
+    ]
+    return _extract_data(_run(args))
+
+
 def field_create(base_token: str, table_id: str, field_spec: dict, as_identity: str = "user") -> dict:
     spec = dict(field_spec)
     # lark-cli +field-create 要求 type 为字符串（"select"），不接受数字（3）

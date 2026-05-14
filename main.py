@@ -105,6 +105,22 @@ def _verify_fields(base_token: str, table_id: str, as_identity: str) -> None:
         return
     want = {f["field_name"] for f in BITABLE_FIELD_SPEC}
     have = {f.get("field_name") for f in existing if isinstance(f, dict)}
+
+    # 旧字段名 → 新字段名映射（评分体系重构后）
+    _RENAME_MAP = {
+        "执行力": "高杠杆投入率",
+        "成长天花板": "资产沉淀度",
+    }
+    for old_name, new_name in _RENAME_MAP.items():
+        if old_name in have and new_name not in have:
+            try:
+                larkcli.field_rename(base_token, table_id, old_name, new_name, as_identity=as_identity)
+                log.info("已重命名字段: %s → %s", old_name, new_name)
+                have.discard(old_name)
+                have.add(new_name)
+            except Exception as e:
+                log.warning("重命名字段 %s → %s 失败: %s", old_name, new_name, e)
+
     missing = want - have
     if missing:
         log.warning("Bitable 缺字段 %s —— 尝试自动补齐", missing)
