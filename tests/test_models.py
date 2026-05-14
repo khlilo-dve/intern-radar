@@ -9,9 +9,9 @@ class TestIntelRecord:
             Company='测试公司',
             Tech_Vision=80,
             Product_Dominance=70,
-            Exec_Ratio=30,
+            Leverage_Ratio=30,
             AI_Leverage=75,
-            Growth_Ceiling=80,
+            Asset_Sedimentation=80,
             Match_Score=78,
             Attack_Strategy='test strategy',
             Critical_Gap='test gap',
@@ -43,19 +43,19 @@ class TestIntelRecord:
     def test_to_bitable_fields(self):
         r = self._make(Status='简历通过')
         fields = r.to_bitable_fields()
-        assert fields['Company'] == '测试公司'
-        assert fields['Status'] == '简历通过'
-        assert 'Created_At' in fields
+        assert fields['公司'] == '测试公司'
+        assert fields['投递状态'] == '简历通过'
+        assert '创建时间' in fields
 
     def test_status_default(self):
         r = self._make()
         fields = r.to_bitable_fields()
-        assert fields['Status'] == '未投递'
+        assert fields['投递状态'] == '未投递'
 
     def test_no_status_no_notes(self):
         r = self._make()
         fields = r.to_bitable_fields()
-        assert 'Notes' not in fields
+        assert '备注' not in fields
 
 
 class TestBitableFieldSpec:
@@ -63,10 +63,10 @@ class TestBitableFieldSpec:
         assert len(BITABLE_FIELD_SPEC) == 19
 
     def test_status_is_single_select(self):
-        status = next(f for f in BITABLE_FIELD_SPEC if f['field_name'] == 'Status')
+        status = next(f for f in BITABLE_FIELD_SPEC if f['field_name'] == '投递状态')
         assert status['type'] == 3
         assert len(status['property']['options']) == 6
 
     def test_notes_is_text(self):
-        notes = next(f for f in BITABLE_FIELD_SPEC if f['field_name'] == 'Notes')
+        notes = next(f for f in BITABLE_FIELD_SPEC if f['field_name'] == '备注')
         assert notes['type'] == 'text'

@@ -124,6 +124,17 @@ def record_list(base_token: str, table_id: str, as_identity: str = "user",
         "--as", as_identity,
     ]
     resp = _extract_data(_run(args, timeout=30))
+    # lark-cli 返回格式: {data: {data: [[val,...],...], fields: [name,...], record_id_list: [...]}}
+    if isinstance(resp, dict) and "data" in resp and "fields" in resp:
+        fields = resp["fields"]
+        rows = resp.get("data", [])
+        record_ids = resp.get("record_id_list", [])
+        items = []
+        for i, row in enumerate(rows):
+            rec_id = record_ids[i] if i < len(record_ids) else ""
+            d = {"record_id": rec_id, "fields": dict(zip(fields, row))} if isinstance(row, list) else row
+            items.append(d)
+        return items
     if isinstance(resp, dict) and "items" in resp:
         return resp["items"]
     if isinstance(resp, list):
@@ -143,6 +154,21 @@ def record_upsert(base_token: str, table_id: str, fields: dict, as_identity: str
     args = [
         "api", "POST", path,
         "--data", json.dumps(payload, ensure_ascii=False),
+        "--as", as_identity,
+    ]
+    return _extract_data(_run(args, timeout=20))
+
+
+@retry(max_retries=3, backoff_base=1.0, backoff_max=5.0, exceptions=(LarkCliError,))
+def record_update(base_token: str, table_id: str, record_id: str, fields: dict,
+                  as_identity: str = "user") -> dict:
+    """更新已有记录（lark-cli +record-upsert --record-id）。"""
+    args = [
+        "base", "+record-upsert",
+        "--base-token", base_token,
+        "--table-id", table_id,
+        "--record-id", record_id,
+        "--json", json.dumps(fields, ensure_ascii=False),
         "--as", as_identity,
     ]
     return _extract_data(_run(args, timeout=20))

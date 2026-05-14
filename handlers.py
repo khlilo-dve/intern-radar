@@ -226,9 +226,9 @@ def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
     score_lines = "\n".join([
         f"**🔧 技术视野**  `{_bar(result.Tech_Vision)}` **{result.Tech_Vision}**",
         f"**🎯 产品主导**  `{_bar(result.Product_Dominance)}` **{result.Product_Dominance}**",
-        f"**⚡ 杂活比例**  `{_bar(result.Exec_Ratio, invert=True)}` **{result.Exec_Ratio}**",
+        f"**⚡ 高杠杆投入率**  `{_bar(result.Leverage_Ratio)}` **{result.Leverage_Ratio}**",
         f"**🤖 AI 杠杆**   `{_bar(result.AI_Leverage)}` **{result.AI_Leverage}**",
-        f"**🚀 成长天花板** `{_bar(result.Growth_Ceiling)}` **{result.Growth_Ceiling}**",
+        f"**🚀 资产沉淀度** `{_bar(result.Asset_Sedimentation)}` **{result.Asset_Sedimentation}**",
     ])
     flags_line = ""
     if result.Red_Flags:
@@ -339,8 +339,8 @@ def _is_duplicate(ctx: Context, record: IntelRecord) -> bool:
         if record.Source_URL and fields.get("投递网址") == record.Source_URL:
             return True
         # 图片模式：同公司 + 同 Raw_Input
-        if not record.Source_URL and record.Company == fields.get("Company"):
-            existing_raw = str(fields.get("Raw_Input") or "")
+        if not record.Source_URL and record.Company == fields.get("公司"):
+            existing_raw = str(fields.get("原始输入") or "")
             if record.Raw_Input and existing_raw and record.Raw_Input == existing_raw:
                 return True
     return False
@@ -366,9 +366,9 @@ def notify_high_score(ctx: Context, chat_id: str, result: IntelRecord) -> None:
     score_lines = "\n".join([
         f"**🔧 技术视野**  `{_bar(result.Tech_Vision)}` **{result.Tech_Vision}**",
         f"**🎯 产品主导**  `{_bar(result.Product_Dominance)}` **{result.Product_Dominance}**",
-        f"**⚡ 杂活比例**  `{_bar(result.Exec_Ratio, invert=True)}` **{result.Exec_Ratio}**",
+        f"**⚡ 高杠杆投入率**  `{_bar(result.Leverage_Ratio)}` **{result.Leverage_Ratio}**",
         f"**🤖 AI 杠杆**   `{_bar(result.AI_Leverage)}` **{result.AI_Leverage}**",
-        f"**🚀 成长天花板** `{_bar(result.Growth_Ceiling)}` **{result.Growth_Ceiling}**",
+        f"**🚀 资产沉淀度** `{_bar(result.Asset_Sedimentation)}` **{result.Asset_Sedimentation}**",
     ])
     flags_line = ""
     if result.Red_Flags:

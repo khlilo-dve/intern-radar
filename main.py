@@ -117,6 +117,83 @@ def _verify_fields(base_token: str, table_id: str, as_identity: str) -> None:
                     log.error("补字段 %s 失败：%s", spec["field_name"], e)
 
 
+# ---------- 爬虫入库前过滤规则 ----------
+
+# 实习岗位识别词
+_INTERNSHIP_WORDS = {"实习", "intern", "Intern", "实习生", "暑期实习", "日常实习", "寒假实习"}
+
+# AI 杠杆高触发词 → 匹配则加权
+_AI_LEVERAGE_BOOST = {
+    "agent", "智能体", "workflow", "自动化工作流",
+    "prompt", "提示词工程", "模型调优", "效果评测",
+    "低代码", "no-code", "快速原型", "mvp",
+    "效能提升", "内部工具", "internal tools",
+    "大模型", "llm", "rag", "ai产品", "aigc",
+}
+
+# 人工密集型红旗词 → 匹配则直接跳过
+_MANUAL_LABOR_REDFLAG = {
+    "数据标注", "语料清洗", "人工审核",
+    "信息录入", "文员辅助", "纯执行",
+    "标准话术执行", "客服支持", "电话客服",
+}
+
+# 高容错/敏捷验证词 → 匹配则加权
+_AGILE_BOOST = {
+    "0到1", "从0到1", "早期核心成员", "ai初创", "startup",
+    "敏捷迭代", "快速试错", "结果导向",
+    "参与决策", "业务闭环", "直面用户",
+}
+
+# 低容错/螺丝钉红旗词 → 匹配则降权上限 60
+_BUREAUCRACY_REDFLAG = {
+    "独立撰写高质量prd", "独立撰写高质量mrd",
+    "熟练使用axure", "熟练使用visio",
+    "1-2年以上大厂产品实习",
+    "协助上级完成日常事务", "流程化推进",
+}
+
+
+def _pre_filter_job(job) -> tuple[bool, str]:
+    """爬虫入库前过滤。返回 (是否通过, 原因)。"""
+    text = f"{job.title} {' '.join(job.tags)}".lower()
+
+    # 1. 必须是实习岗
+    if not any(w.lower() in text for w in _INTERNSHIP_WORDS):
+        return False, "非实习岗位"
+
+    # 2. 人工密集型红旗 → 直接跳过
+    for flag in _MANUAL_LABOR_REDFLAG:
+        if flag in text:
+            return False, f"人工密集型红旗: {flag}"
+
+    return True, ""
+
+
+def _compute_keyword_boost(job) -> float:
+    """根据关键词计算加权系数 (0.0 ~ 0.3)。"""
+    text = f"{job.title} {' '.join(job.tags)}".lower()
+    boost = 0.0
+
+    for kw in _AI_LEVERAGE_BOOST:
+        if kw in text:
+            boost += 0.15
+            break
+
+    for kw in _AGILE_BOOST:
+        if kw in text:
+            boost += 0.10
+            break
+
+    return min(boost, 0.30)
+
+
+def _has_bureaucracy_redflag(job) -> bool:
+    """是否命中低容错/螺丝钉红旗。"""
+    text = f"{job.title} {' '.join(job.tags)}".lower()
+    return any(flag in text for flag in _BUREAUCRACY_REDFLAG)
+
+
 def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
     """定时爬虫扫描：抓取 → LLM 评分 → 高分入库 + 推送。"""
     crawler_cfg = cfg.crawler
@@ -153,6 +230,12 @@ def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
                         continue
                     seen_urls.add(job.url)
 
+                    # 入库前过滤：实习岗 + 红旗词拦截
+                    passed, reason = _pre_filter_job(job)
+                    if not passed:
+                        log.debug("过滤跳过: %s — %s", job.title, reason)
+                        continue
+
                     # 用 trafilatura 抓 JD 正文
                     body = job.jd_text
                     if not body and job.url:
@@ -187,6 +270,20 @@ def run_crawler_scan(ctx: handlers.Context, cfg: AppConfig) -> None:
                         result.City = job.city
                     if not result.Source_URL:
                         result.Source_URL = job.url
+
+                    # 关键词加权：AI 杠杆 + 敏捷验证
+                    boost = _compute_keyword_boost(job)
+                    if boost > 0:
+                        old_score = result.Match_Score
+                        result.Match_Score = min(100, int(result.Match_Score + boost * 100))
+                        log.info("关键词加权: %s %d→%d (+%.0f%%)",
+                                 result.Company, old_score, result.Match_Score, boost * 100)
+
+                    # 螺丝钉红旗：分数上限 60
+                    if _has_bureaucracy_redflag(job):
+                        if result.Match_Score > 60:
+                            log.info("螺丝钉降权: %s %d→60", result.Company, result.Match_Score)
+                            result.Match_Score = 60
 
                     # 低分跳过
                     if result.Match_Score < threshold:

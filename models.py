@@ -17,9 +17,9 @@ class IntelRecord(BaseModel):
     # 多维度评分（0-100）
     Tech_Vision: int = Field(..., ge=0, le=100, description="技术视野要求")
     Product_Dominance: int = Field(..., ge=0, le=100, description="产品业务主导权")
-    Exec_Ratio: int = Field(..., ge=0, le=100, description="日常执行杂活比例（越低越好）")
+    Leverage_Ratio: int = Field(..., ge=0, le=100, description="高杠杆投入率（越高越好）")
     AI_Leverage: int = Field(..., ge=0, le=100, description="AI/自动化杠杆空间")
-    Growth_Ceiling: int = Field(..., ge=0, le=100, description="成长天花板")
+    Asset_Sedimentation: int = Field(..., ge=0, le=100, description="资产沉淀度")
 
     Match_Score: int = Field(..., ge=0, le=100)
     Attack_Strategy: str = Field(..., max_length=2000)
@@ -50,47 +50,37 @@ class IntelRecord(BaseModel):
     def to_bitable_fields(self) -> dict:
         """转换为 Bitable record-upsert 所需的 fields 字典。"""
         fields: dict = {
-            "Company": self.Company,
-            "Business_Line": self.Business_Line,
-            "Hard_Tags": ", ".join(self.Hard_Tags),
-            "Red_Flags": ", ".join(self.Red_Flags),
-            "Tech_Vision": self.Tech_Vision,
-            "Product_Dominance": self.Product_Dominance,
-            "Exec_Ratio": self.Exec_Ratio,
-            "AI_Leverage": self.AI_Leverage,
-            "Growth_Ceiling": self.Growth_Ceiling,
-            "Match_Score": self.Match_Score,
-            "Attack_Strategy": self.Attack_Strategy,
-            "Critical_Gap": self.Critical_Gap,
-            "Created_At": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+            "公司": self.Company,
+            "业务线": self.Business_Line,
+            "硬标签": ", ".join(self.Hard_Tags),
+            "红旗项": ", ".join(self.Red_Flags),
+            "技术视野": self.Tech_Vision,
+            "产品主导力": self.Product_Dominance,
+            "高杠杆投入率": self.Leverage_Ratio,
+            "AI杠杆": self.AI_Leverage,
+            "资产沉淀度": self.Asset_Sedimentation,
+            "综合匹配度": self.Match_Score,
+            "打击策略": self.Attack_Strategy,
+            "核心短板": self.Critical_Gap,
+            "创建时间": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
         }
-        fields["Status"] = self.Status or "未投递"
+        fields["投递状态"] = self.Status or "未投递"
         if self.Job_Title:
-            fields["Job_Title"] = self.Job_Title
+            fields["职位名称"] = self.Job_Title
         if self.City:
-            fields["City"] = self.City
+            fields["城市"] = self.City
         if self.Source_URL:
             fields["投递网址"] = self.Source_URL
         if self.Raw_Input:
-            fields["Raw_Input"] = self.Raw_Input
+            fields["原始输入"] = self.Raw_Input
         return fields
 
 
 BITABLE_FIELD_SPEC = [
-    {"field_name": "Company", "type": "text"},
-    {"field_name": "Business_Line", "type": "text"},
-    {"field_name": "Hard_Tags", "type": "text"},
-    {"field_name": "Red_Flags", "type": "text"},
-    {"field_name": "Tech_Vision", "type": "number"},
-    {"field_name": "Product_Dominance", "type": "number"},
-    {"field_name": "Exec_Ratio", "type": "number"},
-    {"field_name": "AI_Leverage", "type": "number"},
-    {"field_name": "Growth_Ceiling", "type": "number"},
-    {"field_name": "Match_Score", "type": "number"},
-    {"field_name": "Attack_Strategy", "type": "text"},
-    {"field_name": "Critical_Gap", "type": "text"},
+    {"field_name": "公司", "type": "text"},
+    {"field_name": "业务线", "type": "text"},
     {
-        "field_name": "Status",
+        "field_name": "投递状态",
         "type": 3,
         "property": {
             "options": [
@@ -103,10 +93,20 @@ BITABLE_FIELD_SPEC = [
             ]
         },
     },
-    {"field_name": "Notes", "type": "text"},
-    {"field_name": "Job_Title", "type": "text"},
-    {"field_name": "City", "type": "text"},
+    {"field_name": "硬标签", "type": "text"},
+    {"field_name": "红旗项", "type": "text"},
+    {"field_name": "技术视野", "type": "number"},
+    {"field_name": "产品主导力", "type": "number"},
+    {"field_name": "高杠杆投入率", "type": "number"},
+    {"field_name": "AI杠杆", "type": "number"},
+    {"field_name": "资产沉淀度", "type": "number"},
+    {"field_name": "综合匹配度", "type": "number"},
+    {"field_name": "打击策略", "type": "text"},
+    {"field_name": "核心短板", "type": "text"},
+    {"field_name": "备注", "type": "text"},
+    {"field_name": "职位名称", "type": "text"},
+    {"field_name": "城市", "type": "text"},
     {"field_name": "投递网址", "type": "text"},
-    {"field_name": "Created_At", "type": "datetime"},
-    {"field_name": "Raw_Input", "type": "text"},
+    {"field_name": "创建时间", "type": "datetime"},
+    {"field_name": "原始输入", "type": "text"},
 ]
