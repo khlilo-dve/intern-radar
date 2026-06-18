@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -80,15 +81,20 @@ def _handle_text(ctx: Context, chat_id: str, message_id: str, content: Any) -> N
         _reply(ctx, chat_id, "⏭️ 没看到 URL，这条不像招聘情报，跳过")
         return
 
-    for url in urls:
-        _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{url}")
+    if len(urls) == 1:
+        # 单 URL 直接处理，不走线程池
+        _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{urls[0]}")
         try:
-            body = web.fetch_readable(url)
+            body = web.fetch_readable(urls[0])
         except Exception as e:
             _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
-            continue
-        result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
+            return
+        result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=urls[0])
         _finalize(ctx, chat_id, result, raw_fallback=text[:500])
+    else:
+        # 多 URL 并行处理
+        _reply(ctx, chat_id, f"🛰️ 收到 {len(urls)} 个链接，开始并行解析…")
+        _process_urls_parallel(ctx, chat_id, urls, raw_fallback=text[:500])
 
 
 def _handle_image(ctx: Context, chat_id: str, message_id: str, content: Any) -> None:
@@ -148,17 +154,21 @@ def _handle_post(ctx: Context, chat_id: str, message_id: str, content: Any) -> N
 
     combined_text = " ".join(text_parts)
 
-    # 处理 URL
+    # 处理 URL（并行）
     urls = web.extract_all_urls(combined_text)
-    for url in urls:
-        _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{url}")
-        try:
-            body = web.fetch_readable(url)
-        except Exception as e:
-            _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
-            continue
-        result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
-        _finalize(ctx, chat_id, result, raw_fallback=combined_text[:500])
+    if urls:
+        if len(urls) == 1:
+            _reply(ctx, chat_id, f"🛰️ 已抓到链接，开始解析…\n{urls[0]}")
+            try:
+                body = web.fetch_readable(urls[0])
+            except Exception as e:
+                _reply(ctx, chat_id, f"❌ 网页抓取失败：{_short(e)}")
+            else:
+                result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=urls[0])
+                _finalize(ctx, chat_id, result, raw_fallback=combined_text[:500])
+        else:
+            _reply(ctx, chat_id, f"🛰️ 收到 {len(urls)} 个链接，开始并行解析…")
+            _process_urls_parallel(ctx, chat_id, urls, raw_fallback=combined_text[:500])
 
     # 处理图片
     if image_keys:
@@ -263,6 +273,32 @@ def _finalize(ctx: Context, chat_id: str, result, raw_fallback: str) -> None:
             f"短板：{result.Critical_Gap}"
         )
         _reply(ctx, chat_id, fallback)
+
+
+def _process_urls_parallel(ctx: Context, chat_id: str, urls: list[str],
+                           raw_fallback: str = "", max_workers: int = 4) -> None:
+    """并行处理多个 URL：抓取 + LLM 分析，完成后逐个回执。"""
+
+    def _fetch_and_parse(url: str) -> tuple[str, IntelRecord | dict | None, str | None]:
+        """返回 (url, result_or_None, error_or_None)。"""
+        try:
+            body = web.fetch_readable(url)
+        except Exception as e:
+            return (url, None, f"网页抓取失败：{_short(e)}")
+        try:
+            result = llm.parse_text(ctx.client, ctx.baseline, body, source_url=url)
+            return (url, result, None)
+        except Exception as e:
+            return (url, None, f"LLM 解析失败：{_short(e)}")
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(urls))) as pool:
+        futures = {pool.submit(_fetch_and_parse, url): url for url in urls}
+        for future in as_completed(futures):
+            url, result, error = future.result()
+            if error:
+                _reply(ctx, chat_id, f"❌ {url}\n{error}")
+            elif result:
+                _finalize(ctx, chat_id, result, raw_fallback=raw_fallback)
 
 
 # ---------- utilities ----------

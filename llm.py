@@ -110,19 +110,37 @@ def parse_text(client: OpenAI, baseline: str, raw_text: str, source_url: Optiona
 
 def parse_image(client: OpenAI, baseline: str, image_path: str | Path,
                 model: Optional[str] = None) -> IntelRecord | dict:
-    """图片模式：招聘截图 → IntelRecord。"""
+    """图片模式：招聘截图 → 识别文字 → 文本分析 → IntelRecord。两步拆分，vision 只做 OCR。"""
     model = model or os.environ.get("LLM_MODEL_VISION")
     if not model:
         raise RuntimeError("vision 未启用：LLM_MODEL_VISION 为空")
 
     image_path = Path(image_path)
     data_url = _to_data_url(image_path)
-    system = SYSTEM_PROMPT.format(baseline=baseline.strip())
-    content = [
-        {"type": "text", "text": "原材料是一张招聘相关的截图，请仔细识别图中文字后输出 JSON。"},
-        {"type": "image_url", "image_url": {"url": data_url}},
-    ]
-    return _chat_and_parse(client, model, system, content, raw_input=f"[image] {image_path.name}")
+
+    # Step 1: Vision 只提取文字，不做分析
+    t0 = time.monotonic()
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请识别这张招聘截图中的所有文字，原样输出，不要分析、不要总结、不要省略。"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }],
+        temperature=0,
+        max_tokens=2048,
+    )
+    extracted = (resp.choices[0].message.content or "").strip()
+    t_vision = time.monotonic() - t0
+    log.info("Vision OCR 完成: %.1fs, 提取 %d chars", t_vision, len(extracted))
+
+    if not extracted:
+        return {"__skip__": True, "reason": "图片中未识别到文字"}
+
+    # Step 2: 用文本模型分析（复用 parse_text）
+    return parse_text(client, baseline, extracted, source_url=None)
 
 
 def self_check_vision(client: OpenAI) -> bool:
